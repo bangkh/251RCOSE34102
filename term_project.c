@@ -49,7 +49,7 @@ void Record_Gantt(int pid, int time) {
 }
 
 void Generate_IO_Events(int i) {//IO 만들자
-    processes[i].io_event_cnt = (rand() % MAX_IO) + 1;//IO를 1~3 중 랜덤 생성성
+    processes[i].io_event_cnt = rand() % 2; //프로세스 별로 1개 또는 0개 이니, IO는 process 개수 만큼 생성가능
     int prev = 1;//IO 이전과 다음을 배치하기 위한 기준값 설정
     for (int j = 0; j < processes[i].io_event_cnt; j++) {//IO생성 j가 IO 발생횟수
         int req = prev + rand() % ((processes[i].burst_time - prev - (processes[i].io_event_cnt - j)) + 1);
@@ -134,8 +134,10 @@ void Schedule_FCFS(int n) {
             if (processes[running].start_time == -1) //초기값이면(한번도 실행된적없다면)
                 processes[running].start_time = time; //시작시간 적기
 
+            if (!processes[running].in_io){
             processes[running].remaining_time--;//남은 시간 줄이기
             processes[running].executed++;//실행시간 누적
+            }
 
             if (processes[running].io_progress < processes[running].io_event_cnt) {
                 //진행중인 IO와 남은 IO 비교로 IO가 남았다면
@@ -167,6 +169,7 @@ void Schedule_FCFS(int n) {
     gantt[gantt_cnt-1].end = time;//끝나는 시간 함수에 저장
     for (int i = 0; i < gantt_cnt; i++) {//간트 함수 쓰기기
         if (gantt[i].pid == 0) printf("| Idle ");//간트 pid가 0-> 프로세스가 아님
+        else if(gantt[i].pid < 0) printf("| IO ");
         else printf("| P%d ", gantt[i].pid);//간트 차트에 프로세스 pid
     }
     printf("|\n");
@@ -411,19 +414,17 @@ void Schedule_PreemptivePriority(int n) {
     int time = 0, completed = 0, running = -1;
     printf("\n=== Preemptive Priority Gantt Chart ===\n");
 
-    while (completed < n) {//끝날때까지
-        for (int i = 0; i < n; i++) {//IO 확인해보자
-            if (processes[i].in_io) {//IO 있으면, in_io는 IO 작업 중인지 확인하는 플래그그
-                if (--processes[i].io_remain == 0) {//IO 1줄어든 것이 0-> IO 끝나면
-                    processes[i].in_io = 0;//다시 원래 위치로 복귀
-                    processes[i].io_progress++;//다음 IO로 이동동
+    while (completed < n) {
+        for (int i = 0; i < n; i++) {
+            if (processes[i].in_io) {
+                if (--processes[i].io_remain == 0) {
+                    processes[i].in_io = 0;
+                    processes[i].io_progress++;
                 }
             }
         }
 
-        // 현재 가장 높은 우선순위 프로세스 선택
-        int best = 1e9;
-        int next = -1;
+        int best = 1e9, next = -1;
         for (int i = 0; i < n; i++) {
             if (!processes[i].completed && !processes[i].in_io && processes[i].arrival_time <= time) {
                 if (processes[i].priority < best) {
@@ -435,23 +436,22 @@ void Schedule_PreemptivePriority(int n) {
 
         running = next;
 
-        int curr_pid = (running != -1) ? processes[running].pid : 0;
-        Record_Gantt(curr_pid, time);
-
         if (running != -1) {
+            Record_Gantt(processes[running].pid, time);
             if (processes[running].start_time == -1)
                 processes[running].start_time = time;
 
             processes[running].remaining_time--;
             processes[running].executed++;
 
-            // I/O 요청 발생
             if (processes[running].io_progress < processes[running].io_event_cnt) {
                 IOEvent* ev = &processes[running].io_events[processes[running].io_progress];
                 if (!ev->done && processes[running].executed == ev->time) {
+                    ev->done = 1;
                     processes[running].in_io = 1;
                     processes[running].io_remain = ev->burst;
-                    ev->done = 1;
+                    if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+                        gantt[gantt_cnt - 1].end = time + 1;
                 }
             }
 
@@ -461,63 +461,65 @@ void Schedule_PreemptivePriority(int n) {
                 processes[running].waiting_time = processes[running].turnaround_time - processes[running].burst_time;
                 processes[running].completed = 1;
                 completed++;
+                if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+                    gantt[gantt_cnt - 1].end = time + 1;
                 running = -1;
             }
+        } else {
+            Record_Gantt(0, time);
         }
 
         time++;
     }
 
-    gantt[gantt_cnt - 1].end = time;
+    if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+        gantt[gantt_cnt - 1].end = time;
 
     for (int i = 0; i < gantt_cnt; i++)
         printf("| %s%d ", gantt[i].pid == 0 ? "Idle" : "P", gantt[i].pid);
     printf("|\n");
-
     for (int i = 0; i < gantt_cnt; i++)
         printf("%5d ", gantt[i].start);
     printf("%5d\n", gantt[gantt_cnt - 1].end);
 }
 
-#define QUEUE_SIZE (MAX_PROCESSES * MAX_TIME)  //사이즈 설정
+#define QUEUE_SIZE (MAX_PROCESSES * MAX_TIME)
 
 void Schedule_RoundRobin(int n, int quantum) {
-    int time = 0, completed = 0;//시간, 종료된 프로세스 개수
+    int time = 0, completed = 0;
     int queue[QUEUE_SIZE], front = 0, rear = 0;
-    //진행중인 프로세스 앞쪽과 맨뒤 근데 원형 큐라 재사용을 위해서 다시 앞으로 갈수도
     int visited[MAX_PROCESSES] = {0};
-    int running = -1;
 
     printf("\n=== Round Robin Gantt Chart ===\n");
 
-    while (completed < n) {//끝날때까지
-        for (int i = 0; i < n; i++) {//IO 확인해보자
-            if (processes[i].in_io) {//IO 있으면, in_io는 IO 작업 중인지 확인하는 플래그그
-                if (--processes[i].io_remain == 0) {//IO 1줄어든 것이 0-> IO 끝나면
-                    processes[i].in_io = 0;//다시 원래 위치로 복귀
-                    processes[i].io_progress++;//다음 IO로 이동동
+    while (completed < n) {
+        for (int i = 0; i < n; i++) {
+            if (processes[i].in_io) {
+                if (--processes[i].io_remain == 0) {
+                    processes[i].in_io = 0;
+                    processes[i].io_progress++;
                     queue[rear] = i;
                     rear = (rear + 1) % QUEUE_SIZE;
                 }
             }
         }
 
-        // 큐가 비었으면 idle
+        for (int i = 0; i < n; i++) {
+            if (!visited[i] && processes[i].arrival_time <= time) {
+                queue[rear] = i;
+                rear = (rear + 1) % QUEUE_SIZE;
+                visited[i] = 1;
+            }
+        }
+
         if (front == rear) {
             Record_Gantt(0, time);
             time++;
-            for (int i = 0; i < n; i++) {
-                if (!visited[i] && processes[i].arrival_time <= time) {
-                    queue[rear] = i;
-                    rear = (rear + 1) % QUEUE_SIZE;
-                    visited[i] = 1;
-                }
-            }
             continue;
         }
 
-        int idx = queue[front];//front 위치에서 프로세스 꺼냄
-        front = (front + 1) % QUEUE_SIZE;//다음 프로세스를 front로로
+        int idx = queue[front];
+        front = (front + 1) % QUEUE_SIZE;
 
         if (processes[idx].completed || processes[idx].in_io)
             continue;
@@ -533,7 +535,6 @@ void Schedule_RoundRobin(int n, int quantum) {
             processes[idx].remaining_time--;
             processes[idx].executed++;
 
-            // 도착한 새 프로세스 추가
             for (int i = 0; i < n; i++) {
                 if (!visited[i] && processes[i].arrival_time <= time) {
                     queue[rear] = i;
@@ -542,13 +543,14 @@ void Schedule_RoundRobin(int n, int quantum) {
                 }
             }
 
-            // I/O 발생 시 처리
             if (processes[idx].io_progress < processes[idx].io_event_cnt) {
                 IOEvent* ev = &processes[idx].io_events[processes[idx].io_progress];
                 if (!ev->done && processes[idx].executed == ev->time) {
                     processes[idx].in_io = 1;
                     processes[idx].io_remain = ev->burst;
                     ev->done = 1;
+                    if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+                        gantt[gantt_cnt - 1].end = time;
                     break;
                 }
             }
@@ -559,26 +561,29 @@ void Schedule_RoundRobin(int n, int quantum) {
                 processes[idx].waiting_time = processes[idx].turnaround_time - processes[idx].burst_time;
                 processes[idx].completed = 1;
                 completed++;
+                if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+                    gantt[gantt_cnt - 1].end = time;
                 break;
             }
         }
 
-        if (!processes[idx].completed && !processes[idx].in_io) {//프로세스 진행 중 -> time quantum 때문에 쫒겨나면
-            queue[rear] = idx;//rear위치에 프로세스 넣기
+        if (!processes[idx].completed && !processes[idx].in_io) {
+            queue[rear] = idx;
             rear = (rear + 1) % QUEUE_SIZE;
         }
     }
 
-    gantt[gantt_cnt - 1].end = time;
+    if (gantt_cnt > 0 && gantt[gantt_cnt - 1].end == -1)
+        gantt[gantt_cnt - 1].end = time;
 
     for (int i = 0; i < gantt_cnt; i++)
         printf("| %s%d ", gantt[i].pid == 0 ? "Idle" : "P", gantt[i].pid);
     printf("|\n");
-
     for (int i = 0; i < gantt_cnt; i++)
         printf("%5d ", gantt[i].start);
     printf("%5d\n", gantt[gantt_cnt - 1].end);
 }
+
 
 int main() {
     int n;
